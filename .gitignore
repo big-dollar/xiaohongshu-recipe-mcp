@@ -3,5 +3,8 @@ __pycache__/
 temp_media/
 xhs_cookies.json
 publish_error.log
+publish_screenshots/
 *.pyc
 
+
+draft_output.md

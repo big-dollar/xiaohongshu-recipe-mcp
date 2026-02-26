@@ -1,0 +1,13 @@
+{
+    "mcpServers": {
+        "xiaohongshu-recipe": {
+            "command": "python",
+            "args": [
+                "Your Project Dir\\xiaohongshu-recipe-mcp\\server.py"
+            ],
+            "env": {
+                "PYTHONPATH": "Your Project Dir\\xiaohongshu-recipe-mcp"
+            }
+        }
+    }
+}
