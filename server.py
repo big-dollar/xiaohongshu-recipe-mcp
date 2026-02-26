@@ -6,6 +6,13 @@ import uuid
 import sys
 import subprocess
 import threading
+import io
+
+# ✅ Fix: 强制 stdout/stderr 使用 UTF-8，防止 Windows GBK 环境下打印 emoji 导致进程崩溃
+if hasattr(sys.stdout, 'buffer'):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'buffer'):
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 from typing import List, Dict, Any, Optional
 
 import httpx
@@ -218,7 +225,8 @@ async def extract_recipe_from_url(url: str) -> RecipeData:
         'no_color': True,
         # 关闭浏览器 cookie 窃取，因为它在 Windows 上容易引起讨厌但无害的红字报错
         # 我们用一个 dummy 选项让它不要把错误打到 stderr 搞脏屏幕
-        'logger': type('DummyLogger', (object,), {'debug': lambda s: None, 'warning': lambda s: None, 'error': lambda s: None})(),
+        # ✅ Fix: lambda 需要接受 (self, msg) 两个参数，否则 yt-dlp 调用时报 TypeError
+        'logger': type('DummyLogger', (object,), {'debug': lambda self, msg: None, 'warning': lambda self, msg: None, 'error': lambda self, msg: None})(),
     }
     if not video_url:
         try:
@@ -258,6 +266,7 @@ async def generate_xiaohongshu_post(recipe: RecipeData) -> Dict[str, str]:
 4. 制作步骤：分点撰写，语言必须通俗易懂、具有极强的实操性。每一步的核心动作要加粗或用 emoji 点缀，让新手也能一看就会。
 5. 爆款话题（Hashtag）：结尾处必须提供 5-8 个自带高流量的精准话题（例如：#小红书爆款美食 #神仙吃法 #懒人食谱 等）。
 6. 排版与字数：全文总字数严格控制在 800 字以内。大量使用 emoji 提升阅读体验，段落之间留出空行，保持排版呼吸感。
+7. 格式警告：小红书正文不支持 Markdown 格式！请绝对不要使用 `**加粗**`、`# 标题` 或 `- 列表` 等 Markdown 语法，请仅使用纯文本、换行和 Emoji 进行排版。
 
 食谱信息：
 标题：{recipe.title}
@@ -284,10 +293,15 @@ async def generate_xiaohongshu_post(recipe: RecipeData) -> Dict[str, str]:
         return json.loads(content)
     return {"title": recipe.title, "content": "\n".join(recipe.steps)}
 
-async def download_image(url: str, save_dir: str) -> Optional[str]:
-    """下载图片到本地"""
+async def download_image(url: str, save_dir: str, referer: str = "") -> Optional[str]:
+    """下载图片到本地，支持动态 Referer 以绕过不同网站的防盗链"""
     try:
-        # 使用更复杂的头部绕过防盗链
+        from urllib.parse import urlparse
+        # 动态生成 Referer：使用来源页面的域名，若未指定则从图片 URL 推断
+        if not referer:
+            parsed = urlparse(url)
+            referer = f"{parsed.scheme}://{parsed.netloc}/"
+
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
@@ -299,7 +313,7 @@ async def download_image(url: str, save_dir: str) -> Optional[str]:
             "Sec-Fetch-Dest": "image",
             "Sec-Fetch-Mode": "no-cors",
             "Sec-Fetch-Site": "cross-site",
-            "Referer": "https://food52.com/"
+            "Referer": referer
         }
         async with httpx.AsyncClient(follow_redirects=True, headers=headers) as client:
             response = await client.get(url)
@@ -320,23 +334,19 @@ async def download_image(url: str, save_dir: str) -> Optional[str]:
         print(f"下载图片失败 {url}: {e}")
         return None
 
-def sign_xhs_request(uri, data=None, a1="", web_session=""):
-    """
-    小红书请求签名函数 (占位，实际需要更复杂的逆向算法或使用第三方接口服务)
-    通常使用 xhs 库时，如果不提供 sign 函数，部分接口可能无法调用。
-    由于签名算法经常变动，建议寻找开源的签名服务。
-    这里为了演示，提供一个空实现，具体使用时需要查阅 xhs 库文档。
-    """
-    return {}
 
-async def publish_to_xiaohongshu(title: str, content: str, image_urls: List[str], video_url: Optional[str] = None) -> str:
+
+async def publish_to_xiaohongshu(title: str, content: str, image_urls: List[str], source_url: str = "", video_url: Optional[str] = None) -> str:
     """将笔记发布到小红书"""
-    # 初始化小红书客户端
-    # xhs_client = XhsClient(XHS_COOKIE, sign=sign_xhs_request)
-    
-    # 临时目录用于存放下载的图片和视频
-    # 使用长效目录，以便 playwright 有时间读取文件
-    import shutil
+    from urllib.parse import urlparse
+
+    # 从原始页面 URL 提取域名，用于图片下载时的 Referer（绕防盗链）
+    image_referer = ""
+    if source_url:
+        parsed = urlparse(source_url)
+        image_referer = f"{parsed.scheme}://{parsed.netloc}/"
+
+    # 临时目录用于存放下载的图片和视频，使用长效目录以便 playwright 有时间读取文件
     temp_dir = os.path.join(os.getcwd(), "temp_media")
     os.makedirs(temp_dir, exist_ok=True)
     
@@ -352,7 +362,8 @@ async def publish_to_xiaohongshu(title: str, content: str, image_urls: List[str]
                 'no_warnings': True,
                 'nocheckcertificate': True,
                 'ignoreerrors': True,
-                'logger': type('DummyLogger', (object,), {'debug': lambda s: None, 'warning': lambda s: None, 'error': lambda s: None})(),
+                # ✅ Fix: lambda 需要接受 (self, msg) 两个参数
+                'logger': type('DummyLogger', (object,), {'debug': lambda self, msg: None, 'warning': lambda self, msg: None, 'error': lambda self, msg: None})(),
             }
             try:
                 loop = asyncio.get_running_loop()
@@ -361,31 +372,54 @@ async def publish_to_xiaohongshu(title: str, content: str, image_urls: List[str]
                     lambda: yt_dlp.YoutubeDL(params=ydl_opts).download([video_url]) # type: ignore
                 )
             except Exception as e:
-                 raise RuntimeError(f"下载视频失败: {e}")
+                raise RuntimeError(f"下载视频失败: {e}")
                  
             if os.path.exists(video_path):
-                # 使用 Playwright 发布视频
-                result = await publish_with_playwright(title, content, video_path=video_path)
+                # 同时并发下载最多 3 张图片作为视频封面图
+                cover_image_paths: List[str] = []
+                if image_urls:
+                    print(f"视频模式：并发下载最多 3 张封面图...")
+                    cover_tasks = [
+                        download_image(url, temp_dir, referer=image_referer)
+                        for url in image_urls[:3]
+                    ]
+                    cover_results = await asyncio.gather(*cover_tasks, return_exceptions=True)
+                    cover_image_paths = [
+                        r for r in cover_results
+                        if isinstance(r, str) and r
+                    ]
+                    print(f"封面图下载完成，成功 {len(cover_image_paths)} / {min(len(image_urls), 3)} 张")
+
+                result = await publish_with_playwright(
+                    title, content,
+                    video_path=video_path,
+                    cover_image_paths=cover_image_paths
+                )
                 return result
             else:
-                 raise RuntimeError("视频下载后文件不存在")
+                raise RuntimeError("视频下载后文件不存在")
 
-        # 没有视频则发布图文
-        local_image_paths = []
-        for url in image_urls[:9]: # 限制最多 9 张图
-            local_path = await download_image(url, temp_dir)
-            if local_path:
-                local_image_paths.append(local_path)
+        # 没有视频则并发下载图片（asyncio.gather 并发，提升速度）
+        print(f"开始并发下载 {min(len(image_urls), 9)} 张图片...")
+        download_tasks = [
+            download_image(url, temp_dir, referer=image_referer)
+            for url in image_urls[:9]  # 限制最多 9 张图
+        ]
+        results = await asyncio.gather(*download_tasks, return_exceptions=True)
+        local_image_paths = [
+            r for r in results
+            if isinstance(r, str) and r  # 过滤失败的任务（None 或 Exception）
+        ]
+        print(f"图片下载完成，成功 {len(local_image_paths)} / {min(len(image_urls), 9)} 张")
         
         if not local_image_paths:
-            # For testing, use a dummy image if download fails
-            print("Failed to download images, using a test image...")
-            test_img = os.path.join(os.getcwd(), "xiaohongshu-recipe-mcp", "test_lemon.jpg")
+            # 兜底：尝试使用当前目录下的测试图片
+            print("所有图片下载失败，尝试使用本地测试图片...")
+            test_img = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_lemon.jpg")
             if os.path.exists(test_img):
-                 local_image_paths.append(test_img)
+                local_image_paths.append(test_img)
             else:
-                 raise ValueError("没有成功下载到任何图片或视频，无法发布笔记")
-
+                raise ValueError("没有成功下载到任何图片或视频，无法发布笔记")
             
         # 使用 Playwright 发布图文
         result = await publish_with_playwright(title, content, image_paths=local_image_paths)
@@ -393,7 +427,7 @@ async def publish_to_xiaohongshu(title: str, content: str, image_urls: List[str]
         
     finally:
         # 延迟清理临时文件，确保 playwright 读取完成
-        # 实际上为了排错，暂时不清理
+        # 实际上为了排查问题，暂时不清理
         pass
 
 @server.list_tools()
@@ -455,6 +489,7 @@ async def main():
             title=post_data['title'],
             content=post_data['content'],
             image_urls=recipe_data.image_urls,
+            source_url=url,
             video_url=recipe_data.video_url
         )
         print("\\n================================")
