@@ -54,39 +54,48 @@ class RecipeData(BaseModel):
     video_url: Optional[str] = Field(default=None, description="视频链接")
 
 async def extract_recipe_from_url(url: str) -> RecipeData:
-    """从任意网页提取食谱内容和图片"""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"Windows"',
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Upgrade-Insecure-Requests": "1"
-    }
-    
-    # 尝试使用 httpx 抓取
+    """从任意网页或本地HTML提取食谱内容和图片"""
     html_content = ""
-    try:
-        async with httpx.AsyncClient(follow_redirects=True, http2=True) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            html_content = response.text
-    except Exception as e:
-        print(f"HTTP 请求失败 ({e})，尝试使用 Playwright 抓取...")
-        # 如果 httpx 失败 (比如遇到 Cloudflare 或 403)，回退到 playwright
-        from playwright.async_api import async_playwright
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(user_agent=headers["User-Agent"])
-            page = await context.new_page()
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            html_content = await page.content()
-            await browser.close()
+    # 判断是否为本地文件
+    if os.path.isfile(url):
+        try:
+            with open(url, 'r', encoding='utf-8') as f:
+                html_content = f.read()
+        except Exception as e:
+            print(f"读取本地文件失败 ({e})")
+            return RecipeData(title="", ingredients=[], steps=[], image_urls=[], video_url=None)
+    else:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1"
+        }
+        
+        # 尝试使用 httpx 抓取
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, http2=True) as client:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                html_content = response.text
+        except Exception as e:
+            print(f"HTTP 请求失败 ({e})，尝试使用 Playwright 抓取...")
+            # 如果 httpx 失败 (比如遇到 Cloudflare 或 403)，回退到 playwright
+            from playwright.async_api import async_playwright
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context(user_agent=headers["User-Agent"])
+                page = await context.new_page()
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                html_content = await page.content()
+                await browser.close()
             
     soup = BeautifulSoup(html_content, 'html.parser')
 
@@ -204,6 +213,9 @@ async def extract_recipe_from_url(url: str) -> RecipeData:
                 src = re.sub(r'-\d+x\d+\.(jpg|jpeg|png)$', r'.\1', src, flags=re.IGNORECASE)
                 if src not in images:
                     images.append(src)
+            elif src.startswith('file://') or os.path.isabs(src): # 支持本地图片
+                if src not in images:
+                    images.append(src)
     
     # 使用 AI 解析网页文本，提取结构化的食谱数据
     ai_client = AsyncOpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
@@ -313,8 +325,26 @@ async def generate_xiaohongshu_post(recipe: RecipeData) -> Dict[str, str]:
     return {"title": recipe.title, "content": "\n".join(recipe.steps)}
 
 async def download_image(url: str, save_dir: str, referer: str = "") -> Optional[str]:
-    """下载图片到本地，支持动态 Referer 以绕过不同网站的防盗链"""
+    """下载图片到本地，支持动态 Referer 以绕过不同网站的防盗链，同时也支持本地图片路径"""
     try:
+        if url.startswith('file://'):
+            import shutil
+            local_path = url[7:]
+            if os.name == 'nt' and local_path.startswith('/'): # windows 下 file:///C:/ 变成 /C:/
+                local_path = local_path[1:]
+            if os.path.exists(local_path):
+                ext = local_path.split('.')[-1][:4] if '.' in local_path else 'jpg'
+                file_path = os.path.join(save_dir, f"{uuid.uuid4().hex}.{ext}")
+                shutil.copy2(local_path, file_path)
+                return file_path
+            return None
+        elif os.path.isabs(url) and os.path.exists(url):
+            import shutil
+            ext = url.split('.')[-1][:4] if '.' in url else 'jpg'
+            file_path = os.path.join(save_dir, f"{uuid.uuid4().hex}.{ext}")
+            shutil.copy2(url, file_path)
+            return file_path
+
         from urllib.parse import urlparse
         # 动态生成 Referer：使用来源页面的域名，若未指定则从图片 URL 推断
         if not referer:
@@ -524,7 +554,7 @@ load_dotenv()
 async def main():
     try:
         # 获取命令行参数传入的 URL
-        target_url = sys.argv[1] if len(sys.argv) > 1 else "{url}"
+        target_url = sys.argv[1] if len(sys.argv) > 1 else r"{url}"
         is_draft = sys.argv[2] == "True" if len(sys.argv) > 2 else {"True" if save_draft else "False"}
         print("\\n" + "="*40, flush=True)
         print(f"🚀 捕获到新任务！", flush=True)

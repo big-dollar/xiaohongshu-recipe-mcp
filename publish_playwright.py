@@ -273,6 +273,18 @@ async def publish_with_playwright(title: str, content: str, image_paths: List[st
                 # --- 操作后截图留存，用于确认结果 ---
                 screenshot_path = await take_screenshot(page, "after_publish" if not save_draft else "after_save_draft")
 
+                if save_draft:
+                    print("暂存成功！页面保持打开 300 秒，供您进入草稿箱修改和发布...")
+                    try:
+                        # 循环等待，每 10 秒检查一次浏览器状态，总计 300 秒
+                        for _ in range(30):
+                            if page.is_closed():
+                                print("页面已关闭，结束等待。")
+                                break
+                            await page.wait_for_timeout(10000)
+                    except Exception as e:
+                        print(f"等待被中断或发生异常: {e}")
+
                 action_name = "发布" if not save_draft else "暂存草稿"
                 result_msg = f"Playwright 模拟点击{action_name}完成！"
                 if screenshot_path:
