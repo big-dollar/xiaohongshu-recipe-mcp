@@ -355,7 +355,7 @@ async def download_image(url: str, save_dir: str, referer: str = "") -> Optional
 
 
 
-async def publish_to_xiaohongshu(title: str, content: str, image_urls: List[str], source_url: str = "", video_url: Optional[str] = None) -> str:
+async def publish_to_xiaohongshu(title: str, content: str, image_urls: List[str], source_url: str = "", video_url: Optional[str] = None, save_draft: bool = False) -> str:
     """将笔记发布到小红书"""
     from urllib.parse import urlparse
 
@@ -412,7 +412,8 @@ async def publish_to_xiaohongshu(title: str, content: str, image_urls: List[str]
                 result = await publish_with_playwright(
                     title, content,
                     video_path=video_path,
-                    cover_image_paths=cover_image_paths
+                    cover_image_paths=cover_image_paths,
+                    save_draft=save_draft
                 )
                 return result
             else:
@@ -441,7 +442,7 @@ async def publish_to_xiaohongshu(title: str, content: str, image_urls: List[str]
                 raise ValueError("没有成功下载到任何图片或视频，无法发布笔记")
             
         # 使用 Playwright 发布图文
-        result = await publish_with_playwright(title, content, image_paths=local_image_paths)
+        result = await publish_with_playwright(title, content, image_paths=local_image_paths, save_draft=save_draft)
         return result
         
     finally:
@@ -456,6 +457,20 @@ async def handle_list_tools() -> list[types.Tool]:
         types.Tool(
             name="generate_and_publish_recipe",
             description="从给定的食谱网页URL抓取内容，使用AI生成小红书笔记风格的文案，并自动打开浏览器发布到小红书（首次需扫码）。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "要抓取的食谱网页URL"
+                    }
+                },
+                "required": ["url"]
+            }
+        ),
+        types.Tool(
+            name="generate_and_save_draft_recipe",
+            description="抓取食谱网页并生成小红书笔记文案，之后打开浏览器填充内容并点击'暂存离开'，存入草稿箱不立即发布。",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -483,7 +498,7 @@ async def handle_list_tools() -> list[types.Tool]:
         )
     ]
 
-def run_background_publish(url: str):
+def run_background_publish(url: str, save_draft: bool = False):
     """在一个独立的进程中运行发布任务，避免阻塞 MCP"""
     project_root = os.path.dirname(os.path.abspath(__file__))
     script = f"""
@@ -510,6 +525,7 @@ async def main():
     try:
         # 获取命令行参数传入的 URL
         target_url = sys.argv[1] if len(sys.argv) > 1 else "{url}"
+        is_draft = sys.argv[2] == "True" if len(sys.argv) > 2 else {"True" if save_draft else "False"}
         print("\\n" + "="*40, flush=True)
         print(f"🚀 捕获到新任务！", flush=True)
         print(f"📍 目标网址: {{target_url}}", flush=True)
@@ -535,7 +551,8 @@ async def main():
             content=post_data['content'],
             image_urls=recipe_data.image_urls,
             source_url=target_url,
-            video_url=recipe_data.video_url
+            video_url=recipe_data.video_url,
+            save_draft=is_draft
         )
         print("\\n================================", flush=True)
         print("✅ 全部流程执行完毕，已成功发布！", flush=True)
@@ -575,7 +592,7 @@ if __name__ == '__main__':
     if os.name == 'nt': # Windows
         # 针对 Windows 路径带空格的情况，手动构造命令字符串并作为单一字符串传入
         # 避免 subprocess.Popen 列表传参时自动转义双引号
-        command = f'cmd /k "chcp 65001 >nul & "{sys.executable}" "{temp_script_path}" "{url}""'
+        command = f'cmd /k "chcp 65001 >nul & "{sys.executable}" "{temp_script_path}" "{url}" "{save_draft}""'
         subprocess.Popen(
             command, 
             creationflags=subprocess.CREATE_NEW_CONSOLE,
@@ -584,7 +601,7 @@ if __name__ == '__main__':
         )
     else:
         subprocess.Popen(
-            [sys.executable, temp_script_path, url], 
+            [sys.executable, temp_script_path, url, str(save_draft)], 
             start_new_session=True,
             cwd=project_root,
             env=env
@@ -596,18 +613,20 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[types.Text
     if not arguments:
         raise ValueError("Missing arguments")
 
-    if name == "generate_and_publish_recipe":
+    if name in ["generate_and_publish_recipe", "generate_and_save_draft_recipe"]:
         url = arguments.get("url")
         if not url:
             raise ValueError("Missing url parameter")
             
+        is_draft = (name == "generate_and_save_draft_recipe")
         try:
             # 改为异步触发，立刻返回给客户端
-            run_background_publish(url)
+            run_background_publish(url, save_draft=is_draft)
             
+            action_text = "存草稿（暂存离开）" if is_draft else "发布"
             return [types.TextContent(
                 type="text",
-                text=f"✅ 发布任务已在后台启动！\n\n请注意你的桌面，稍后会自动弹出一个浏览器窗口。\n如果是首次运行，请在弹出的浏览器中用手机扫码登录小红书。"
+                text=f"✅ {action_text}任务已在后台启动！\n\n请注意你的桌面，稍后会自动弹出一个浏览器窗口。\n如果是首次运行，请在弹出的浏览器中用手机扫码登录小红书。"
             )]
         except Exception as e:
             return [types.TextContent(type="text", text=f"后台任务启动失败: {str(e)}")]

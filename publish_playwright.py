@@ -70,7 +70,7 @@ async def take_screenshot(page: Page, label: str = "result") -> str:
         return ""
 
 
-async def publish_with_playwright(title: str, content: str, image_paths: List[str] = [], video_path: Optional[str] = None, cover_image_paths: List[str] = []) -> str:
+async def publish_with_playwright(title: str, content: str, image_paths: List[str] = [], video_path: Optional[str] = None, cover_image_paths: List[str] = [], save_draft: bool = False) -> str:
     """使用 Playwright 模拟浏览器操作发布笔记，发布后自动截图留存。
     
     Args:
@@ -255,28 +255,34 @@ async def publish_with_playwright(title: str, content: str, image_paths: List[st
             # --- 发布前截图留存 ---
             screenshot_path = await take_screenshot(page, "before_publish")
             
-            # 5. 点击发布
-            print("准备点击发布...")
-            publish_btn = page.locator('button.publishBtn')
-            if await publish_btn.count() == 0:
-                publish_btn = page.locator('button:has-text("发布")')
+            # 5. 点击发布或暂存
+            if save_draft:
+                print("准备点击暂存离开...")
+                publish_btn = page.locator('button:has-text("暂存离开"), button:has-text("存草稿")')
+            else:
+                print("准备点击发布...")
+                publish_btn = page.locator('button.publishBtn')
+                if await publish_btn.count() == 0:
+                    publish_btn = page.locator('button:has-text("发布")')
                 
             if await publish_btn.count() > 0:
                 await publish_btn.first.click()
-                print("等待发布成功提示...")
+                print("等待操作完成提示...")
                 await page.wait_for_timeout(8000)
 
-                # --- 发布后截图留存，用于确认结果 ---
-                screenshot_path = await take_screenshot(page, "after_publish")
+                # --- 操作后截图留存，用于确认结果 ---
+                screenshot_path = await take_screenshot(page, "after_publish" if not save_draft else "after_save_draft")
 
-                result_msg = "Playwright 模拟点击发布完成！"
+                action_name = "发布" if not save_draft else "暂存草稿"
+                result_msg = f"Playwright 模拟点击{action_name}完成！"
                 if screenshot_path:
-                    result_msg += f"\n📸 发布结果截图已保存至: {screenshot_path}"
+                    result_msg += f"\n📸 {action_name}结果截图已保存至: {screenshot_path}"
                 return result_msg
             else:
-                # 未找到发布按钮也截图，方便排查
+                # 未找到按钮也截图，方便排查
                 screenshot_path = await take_screenshot(page, "no_publish_btn")
-                result_msg = "未找到发布按钮，请手动点击发布。"
+                action_name = "发布" if not save_draft else "暂存离开"
+                result_msg = f"未找到{action_name}按钮，请手动点击操作。"
                 if screenshot_path:
                     result_msg += f"\n📸 当前页面截图已保存至: {screenshot_path}"
                 return result_msg
