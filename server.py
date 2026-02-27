@@ -101,14 +101,17 @@ async def extract_recipe_from_url(url: str) -> RecipeData:
             
     # 尝试寻找主要的食谱内容区域，以避免抓取到侧边栏或推荐菜谱的图片
     main_content = soup
-    # 常见的正文容器特征
     content_selectors = [
+        '.card-recipe-detail',
+        '.recipe-detail',
         'article',
         'main',
         '.recipe-content',
         '.post-content',
         '.entry-content',
         '#recipe-block',
+        '[class*="recipe-content"]',
+        '[class*="recipe-detail"]',
         '[class*="recipe"]',
         '[class*="content"]'
     ]
@@ -156,7 +159,7 @@ async def extract_recipe_from_url(url: str) -> RecipeData:
     images = []
     
     # 一些用来过滤非正文图片的特征关键词
-    exclude_classes = ['sidebar', 'widget', 'related', 'recommended', 'footer', 'nav', 'author', 'promo']
+    exclude_classes = ['sidebar', 'widget', 'related', 'recommended', 'footer', 'nav', 'author', 'promo', 'category', 'categories', 'recipe-card', 'index-categories']
     
     # 获取原始的所有 img 标签，因为 main_content 可能切得太狠了
     for img in main_content.find_all('img') + soup.find_all('img', class_='featured-image'):
@@ -172,6 +175,14 @@ async def extract_recipe_from_url(url: str) -> RecipeData:
                 if any(exc in class_str.lower() for exc in exclude_classes):
                     skip = True
                     break
+                
+                # 过滤外链图或跳转到其他食谱的卡片大图
+                if parent.name == 'a':
+                    href = parent.get('href', '')
+                    # 如果跳转的不是当前网页本身，也不是大图片，那么大概率是其他食谱列表项或者广告
+                    if href and url not in href and not href.lower().endswith(('.jpg', '.jpeg', '.png', '.webp', '.gif')) and not href.startswith('#'):
+                        skip = True
+                        break
         
         if skip:
             continue
@@ -187,7 +198,7 @@ async def extract_recipe_from_url(url: str) -> RecipeData:
                 src = f"{parsed_url.scheme}://{parsed_url.netloc}{src}"
             
             # 简单过滤：忽略太小的图标或者 base64
-            if src.startswith('http') and not any(skip_word in src.lower() for skip_word in ['icon', 'logo', 'avatar', 'gif', 'svg', 'thumb', 'small', '150x150', '300x300']):
+            if src.startswith('http') and not any(skip_word in src.lower() for skip_word in ['icon', 'logo', 'avatar', 'gif', 'svg', 'thumb', 'small', '150x150', '300x300', 'impression', 'pixel', 'dummy']):
                 # 如果 URL 中有查询参数控制大小（比如 wp 的图像），尽量保留原图
                 import re
                 src = re.sub(r'-\d+x\d+\.(jpg|jpeg|png)$', r'.\1', src, flags=re.IGNORECASE)
