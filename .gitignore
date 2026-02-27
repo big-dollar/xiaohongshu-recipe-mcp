@@ -7,4 +7,10 @@ publish_screenshots/
 *.pyc
 
 
+# Test scripts
+sync_test.py
+test_run.py
+test_sync_driver.py
+publish_task.py
+
 draft_output.md

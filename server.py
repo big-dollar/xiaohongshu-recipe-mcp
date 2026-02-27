@@ -8,11 +8,19 @@ import subprocess
 import threading
 import io
 
-# ✅ Fix: 强制 stdout/stderr 使用 UTF-8，防止 Windows GBK 环境下打印 emoji 导致进程崩溃
-if hasattr(sys.stdout, 'buffer'):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-if hasattr(sys.stderr, 'buffer'):
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+# ✅ Fix: 强制 stdout/stderr 使用 UTF-8 并开启行缓冲，防止 Windows 下 emoji 崩溃以及输出空白
+try:
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
+    elif hasattr(sys.stdout, 'buffer'):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+        
+    if hasattr(sys.stderr, 'reconfigure'):
+        sys.stderr.reconfigure(encoding='utf-8', line_buffering=True)
+    elif hasattr(sys.stderr, 'buffer'):
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+except Exception:
+    pass
 from typing import List, Dict, Any, Optional
 
 import httpx
@@ -466,60 +474,110 @@ async def handle_list_tools() -> list[types.Tool]:
 
 def run_background_publish(url: str):
     """在一个独立的进程中运行发布任务，避免阻塞 MCP"""
+    project_root = os.path.dirname(os.path.abspath(__file__))
     script = f"""
 import asyncio
 import sys
+import os
 import io
+
+# 将项目根目录添加到路径，确保能导入 server 模块
+sys.path.append(r"{project_root}")
+
 from server import extract_recipe_from_url, generate_xiaohongshu_post, publish_to_xiaohongshu
 from dotenv import load_dotenv
 
+# 解决 Windows 下 Emoji 打印导致的编码问题，并设置为行缓冲以防输出卡住
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
+elif hasattr(sys.stdout, 'buffer'):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+
 load_dotenv()
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 async def main():
     try:
-        # 获取命令行参数传入的 URL，如果在测试环境下没有参数，则使用默认的
-        url = sys.argv[1] if len(sys.argv) > 1 else 'https://www.thekitchn.com/grandmas-famous-lemon-bars-recipe-review-23770816'
-        print(f"\\n正在准备处理网址: {url}\\n")
-        recipe_data = await extract_recipe_from_url(url)
-        print("网页抓取完毕，开始生成文案...")
+        # 获取命令行参数传入的 URL
+        target_url = sys.argv[1] if len(sys.argv) > 1 else "{url}"
+        print("\\n" + "="*40, flush=True)
+        print(f"🚀 捕获到新任务！", flush=True)
+        print(f"📍 目标网址: {{target_url}}", flush=True)
+        print("="*40 + "\\n", flush=True)
+        
+        print("🔍 正在抓取并分析网页内容...", flush=True)
+        recipe_data = await extract_recipe_from_url(target_url)
+        
+        print("📝 正在使用 AI 生成爆款推文...", flush=True)
         post_data = await generate_xiaohongshu_post(recipe_data)
-        print("文案生成完毕，准备调用浏览器发布...")
+        
+        print(f"✨ 文案生成成功！标题: {{post_data.get('title', '无标题')}}", flush=True)
+        
+        if recipe_data.video_url:
+            print(f"📹 发现视频，准备下载并发布...", flush=True)
+        elif recipe_data.image_urls:
+            print(f"🖼️ 发现 {{len(recipe_data.image_urls)}} 张图片，准备下载并发布...", flush=True)
+            
+        print("🌐 正在启动浏览器准备发布...", flush=True)
+        
         await publish_to_xiaohongshu(
             title=post_data['title'],
             content=post_data['content'],
             image_urls=recipe_data.image_urls,
-            source_url=url,
+            source_url=target_url,
             video_url=recipe_data.video_url
         )
-        print("\\n================================")
-        print("✅ 全部流程执行完毕，发布成功！")
-        print("================================")
+        print("\\n================================", flush=True)
+        print("✅ 全部流程执行完毕，已成功发布！", flush=True)
+        print("================================", flush=True)
     except Exception as _e:
-        print("\\n================================")
-        print("❌ 执行失败: " + str(_e))
-        print("================================")
+        print("\\n" + "!"*40, flush=True)
+        print("❌ 后台执行发生错误件", flush=True)
+        print(str(_e), flush=True)
+        print("!"*40 + "\\n", flush=True)
         import traceback
         traceback.print_exc()
-        with open('publish_error.log', 'w') as f:
+        # 记录错误到本地文件便于排查
+        error_log_path = os.path.join(r"{project_root}", 'publish_error.log')
+        with open(error_log_path, 'w', encoding='utf-8') as f:
             f.write(str(_e))
+            f.write("\\n\\n")
+            traceback.print_report(file=f)
     finally:
-        print("\\n控制台将在 15 秒后自动关闭...")
-        await asyncio.sleep(15)
+        print("\\n⏳ 本控制台将在 30 秒后自动关闭...", flush=True)
+        await asyncio.sleep(30)
 
 if __name__ == '__main__':
     asyncio.run(main())
 """
     # 写入临时脚本并执行
+    import tempfile
     with tempfile.NamedTemporaryFile('w', delete=False, suffix='.py', encoding='utf-8') as f:
         f.write(script)
         temp_script_path = f.name
         
-    # 在后台启动进程，通过命令行传参 URL
+    # 在后台启动进程，通过命令行传参 URL，并指定工作目录
+    import subprocess
+    env = os.environ.copy()
+    env["PYTHONPATH"] = project_root
+    env["PYTHONUNBUFFERED"] = "1"  # 强制彻底关闭 Python 的输出缓冲
+    
     if os.name == 'nt': # Windows
-        subprocess.Popen([sys.executable, temp_script_path, url], creationflags=subprocess.CREATE_NEW_CONSOLE)
+        # 针对 Windows 路径带空格的情况，手动构造命令字符串并作为单一字符串传入
+        # 避免 subprocess.Popen 列表传参时自动转义双引号
+        command = f'cmd /k "chcp 65001 >nul & "{sys.executable}" "{temp_script_path}" "{url}""'
+        subprocess.Popen(
+            command, 
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+            cwd=project_root,
+            env=env
+        )
     else:
-        subprocess.Popen([sys.executable, temp_script_path, url], start_new_session=True)
+        subprocess.Popen(
+            [sys.executable, temp_script_path, url], 
+            start_new_session=True,
+            cwd=project_root,
+            env=env
+        )
 
 @server.call_tool()
 async def handle_call_tool(name: str, arguments: dict | None) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
