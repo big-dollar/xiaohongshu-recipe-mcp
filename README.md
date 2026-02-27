@@ -116,6 +116,27 @@ MODEL_NAME=gpt-4o-mini
 ```
 *配置完成后，重启 AI 助手即可在聊天框直接对 AI 说：“把这个网页食谱发到小红书：https://xxxx...”*
 
+### 在 Antigravity (Gemini CLI) 中配置
+打开或创建 `~/.gemini/antigravity/mcp_config.json`，添加以下配置：
+
+```json
+{
+    "mcpServers": {
+        "xiaohongshu-recipe": {
+            "command": "python",
+            "args": [
+                "你的项目绝对路径\\xiaohongshu-recipe-mcp\\server.py"
+            ],
+            "env": {
+                "PYTHONPATH": "你的项目绝对路径\\xiaohongshu-recipe-mcp"
+            }
+        }
+    }
+}
+```
+
+*配置完成后，重启 Antigravity 即可使用同样的自然语言指令触发功能。*
+
 ## 🎮 手动测试运行
 
 如果你不想走 MCP 客户端，想直接测试核心流程，可以通过命令行强制执行内部逻辑：
