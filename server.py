@@ -469,7 +469,15 @@ async def publish_to_xiaohongshu(title: str, content: str, image_urls: List[str]
                         
                         loop = asyncio.get_running_loop()
                         def run_cmd():
-                            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
+                            # 使用 errors='replace' 来避免 Windows 平台下的解码报错
+                            process = subprocess.Popen(
+                                cmd, 
+                                stdout=subprocess.PIPE, 
+                                stderr=subprocess.STDOUT, 
+                                text=True, 
+                                encoding='utf-8', 
+                                errors='replace'
+                            )
                             for line in process.stdout: # type: ignore
                                 # 将 yt-dlp 的下载进度实时打印出来
                                 if '[download]' in line or '[youtube]' in line:
