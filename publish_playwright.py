@@ -139,7 +139,17 @@ async def publish_with_playwright(title: str, content: str, image_paths: List[st
                 await file_input.first.set_input_files(video_path)
                 # 等待视频上传完成
                 print("等待视频上传...")
-                await page.wait_for_timeout(15000)
+                
+                # 轮询检查上传进度或者等待一个较长的固定时间
+                # 小红书上传视频时，界面上会有类似“重新上传”的按钮出现，表示上传完成
+                # 我们这里加长默认等待时间，最大等待 2 分钟 (120秒)
+                try:
+                    await page.wait_for_selector('text="重新上传"', timeout=120000)
+                    print("✅ 视频上传成功。")
+                    await page.wait_for_timeout(2000) # 缓冲一下
+                except Exception:
+                    print("⚠️ 等待视频上传完成标志超时，可能还在上传或页面变化。再额外等待 15 秒...")
+                    await page.wait_for_timeout(15000)
 
                 # ── 封面图上传（方案C）────────────────────────────────────────
                 if cover_image_paths:

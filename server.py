@@ -154,6 +154,20 @@ async def extract_recipe_from_url(url: str) -> RecipeData:
             video_url = div.get('data-video-url')
             break
             
+        # 搜索 iframe 中的 youtube/vimeo 链接
+        if not video_url:
+            for iframe in main_content.find_all('iframe'):
+                src = iframe.get('src')
+                if src and ('youtube.com/embed/' in src or 'player.vimeo.com/video/' in src):
+                    video_url = src
+                    # 把 URL 格式化为标准链接方便 yt-dlp 解析
+                    if 'youtube.com/embed/' in src:
+                        video_id = src.split('youtube.com/embed/')[1]
+                        if '?' in video_id:
+                            video_id = video_id.split('?')[0]
+                        video_url = f"https://www.youtube.com/watch?v={video_id}"
+                    break
+            
         # 搜索 script 标签里的 .mp4 链接
         if not video_url:
             for script in main_content.find_all('script'):
@@ -402,28 +416,72 @@ async def publish_to_xiaohongshu(title: str, content: str, image_urls: List[str]
     try:
         # 优先发布视频
         if video_url:
-            print(f"正在下载视频: {video_url}")
-            # 使用 yt-dlp 下载视频
+            print(f"正在准备下载视频: {video_url}")
             video_path = os.path.join(temp_dir, f"{uuid.uuid4().hex}.mp4")
-            ydl_opts = {
-                'outtmpl': video_path,
-                'quiet': True,
-                'no_warnings': True,
-                'nocheckcertificate': True,
-                'ignoreerrors': True,
-                # ✅ Fix: lambda 需要接受 (self, msg) 两个参数
-                'logger': type('DummyLogger', (object,), {'debug': lambda self, msg: None, 'warning': lambda self, msg: None, 'error': lambda self, msg: None})(),
-            }
-            try:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(
-                    None,
-                    lambda: yt_dlp.YoutubeDL(params=ydl_opts).download([video_url]) # type: ignore
-                )
-            except Exception as e:
-                raise RuntimeError(f"下载视频失败: {e}")
-                 
-            if os.path.exists(video_path):
+            
+            cookie_path = os.path.join(os.getcwd(), 'cookies.txt')
+            is_youtube = 'youtube.com' in video_url or 'youtu.be' in video_url
+            
+            # 针对 YouTube 的交互式 Cookie 提示
+            if is_youtube:
+                while True:
+                    if os.path.exists(cookie_path):
+                        print(f"✅ 找到 cookies.txt，开始尝试下载...")
+                        break
+                    else:
+                        print("\n" + "!"*50)
+                        print("⚠️ 检测到 YouTube 视频，且当前目录缺少 cookies.txt 文件。")
+                        print("👉 请在浏览器中安装 Get cookies.txt 扩展，导出并保存到本项目根目录的 cookies.txt 文件中。")
+                        print("!"*50)
+                        input("保存完成后，请按【回车键】继续...")
+            
+            # 尝试下载
+            download_success = False
+            while not download_success:
+                ydl_opts = {
+                    'outtmpl': video_path,
+                    'quiet': False, # 关闭 quiet 以便用户能看到 bot 检测错误
+                    'no_warnings': False,
+                    'nocheckcertificate': True,
+                    'ignoreerrors': False, # 改为 False 让外部捕获
+                }
+                
+                if is_youtube:
+                    # 针对 YouTube 添加 cookie 和 js_engine
+                    if os.path.exists(cookie_path):
+                        ydl_opts['cookiefile'] = cookie_path
+                    ydl_opts['js_engine'] = 'nodejs' # 使用用户提到的 nodejs 绕过
+
+                try:
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(
+                        None,
+                        lambda: yt_dlp.YoutubeDL(params=ydl_opts).download([video_url]) # type: ignore
+                    )
+                    
+                    if os.path.exists(video_path):
+                        download_success = True
+                    else:
+                        raise RuntimeError("yt-dlp 执行完成但未生成视频文件")
+                        
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    print(f"\n❌ 下载失败: {e}")
+                    if is_youtube and ('bot' in error_msg or 'sign in' in error_msg):
+                        print("\n" + "!"*50)
+                        print("⚠️ 下载失败，可能 cookies.txt 已失效或格式不正确。")
+                        print("👉 请重新导出最新的 cookies.txt 文件覆盖原文件。")
+                        print("如果想放弃下载该视频转而发布纯图文，请直接关闭本窗口，或者输入 'skip' 并回车。")
+                        print("!"*50)
+                        user_input = input("更新 cookies.txt 后按【回车键】重试，或输入 skip 放弃视频：")
+                        if user_input.strip().lower() == 'skip':
+                            print("⏭️ 用户选择放弃视频，降级为图文模式。")
+                            break # 跳出 while 循环
+                    else:
+                        # 其它错误直接跳出让下方代码报错或降级
+                        break
+
+            if download_success:
                 # 同时并发下载最多 3 张图片作为视频封面图
                 cover_image_paths: List[str] = []
                 if image_urls:
@@ -447,7 +505,7 @@ async def publish_to_xiaohongshu(title: str, content: str, image_urls: List[str]
                 )
                 return result
             else:
-                raise RuntimeError("视频下载后文件不存在")
+                print("⚠️ 视频下载失败，已自动降级为图文模式发布...")
 
         # 没有视频则并发下载图片（asyncio.gather 并发，提升速度）
         print(f"开始并发下载 {min(len(image_urls), 9)} 张图片...")
