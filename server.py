@@ -488,11 +488,16 @@ async def publish_to_xiaohongshu(title: str, content: str, image_urls: List[str]
                                         print(f"\\n{line.strip()}", flush=True)
                             process.wait()
                             print("\\n")
+                            # yt-dlp 返回非 0 即为失败，我们将具体的输出保存起来用于外部捕获关键字
+                            if process.returncode != 0:
+                                return "error_bot_or_signin" # 用一个固定字符串替代数字，让外面更容易识别出这是可能由于 bot 引起的
                             return process.returncode
                             
                         returncode = await loop.run_in_executor(None, run_cmd)
                         
-                        if returncode != 0:
+                        if returncode == "error_bot_or_signin":
+                            raise RuntimeError("yt-dlp 执行失败，检测到 bot 或 sign in 相关错误")
+                        elif returncode != 0:
                             raise RuntimeError(f"yt-dlp 子进程返回错误码: {returncode}")
                     else:
                         loop = asyncio.get_running_loop()
