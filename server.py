@@ -453,11 +453,45 @@ async def publish_to_xiaohongshu(title: str, content: str, image_urls: List[str]
                     ydl_opts['js_engine'] = 'nodejs' # 使用用户提到的 nodejs 绕过
 
                 try:
-                    loop = asyncio.get_running_loop()
-                    await loop.run_in_executor(
-                        None,
-                        lambda: yt_dlp.YoutubeDL(params=ydl_opts).download([video_url]) # type: ignore
-                    )
+                    import subprocess
+                    if is_youtube and os.path.exists(cookie_path):
+                        # 如果是 YouTube，由于 Python API 内部直接调用有时无法正确挂载 node 环境来解密 JS 挑战
+                        # 这里直接采用 subprocess 调用命令行的 yt-dlp 来实现与用户终端一致的行为
+                        print("检测到 YouTube 链接，正在通过 subprocess 唤起 yt-dlp...")
+                        cmd = [
+                            'yt-dlp', 
+                            '--cookies', cookie_path, 
+                            '--js-runtimes', 'node', 
+                            '--no-check-certificate',
+                            '-o', video_path, 
+                            video_url
+                        ]
+                        
+                        loop = asyncio.get_running_loop()
+                        def run_cmd():
+                            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
+                            for line in process.stdout: # type: ignore
+                                # 将 yt-dlp 的下载进度实时打印出来
+                                if '[download]' in line or '[youtube]' in line:
+                                    # 为了不刷屏，只打印部分进度
+                                    if 'ETA' in line:
+                                        print(f"\\r{line.strip()}", end='', flush=True)
+                                    else:
+                                        print(f"\\n{line.strip()}", flush=True)
+                            process.wait()
+                            print("\\n")
+                            return process.returncode
+                            
+                        returncode = await loop.run_in_executor(None, run_cmd)
+                        
+                        if returncode != 0:
+                            raise RuntimeError(f"yt-dlp 子进程返回错误码: {returncode}")
+                    else:
+                        loop = asyncio.get_running_loop()
+                        await loop.run_in_executor(
+                            None,
+                            lambda: yt_dlp.YoutubeDL(params=ydl_opts).download([video_url]) # type: ignore
+                        )
                     
                     if os.path.exists(video_path):
                         download_success = True
