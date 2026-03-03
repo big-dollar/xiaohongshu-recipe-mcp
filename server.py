@@ -56,10 +56,19 @@ class RecipeData(BaseModel):
 async def extract_recipe_from_url(url: str) -> RecipeData:
     """从任意网页或本地HTML提取食谱内容和图片"""
     html_content = ""
-    # 判断是否为本地文件
-    if os.path.isfile(url):
+        # 判断是否为本地文件
+    if os.path.isfile(url) or url.startswith('file://'):
         try:
-            with open(url, 'r', encoding='utf-8') as f:
+            # 处理 file:/// 前缀
+            file_path = url.replace('file:///', '').replace('file://', '')
+            # 在 windows 上，如果 file_path 以类似 D:/ 开头，就不需要前置的 /
+            if os.name == 'nt' and file_path.startswith('/'):
+                 file_path = file_path[1:]
+                 
+            import urllib.request
+            file_path = urllib.request.url2pathname(file_path)
+
+            with open(file_path, 'r', encoding='utf-8') as f:
                 html_content = f.read()
         except Exception as e:
             print(f"读取本地文件失败 ({e})")

@@ -253,7 +253,8 @@ async def publish_with_playwright(title: str, content: str, image_paths: List[st
                     await page.locator(selector).first.click()
                     await page.wait_for_timeout(500)
                     await page.keyboard.insert_text(content)
-                    print(f"使用选择器 {selector} 成功填写正文")
+                    await page.keyboard.press("Enter")
+                    print(f"使用选择器 {selector} 成功填写正文并追加换行")
                     content_filled = True
                     break
                     
